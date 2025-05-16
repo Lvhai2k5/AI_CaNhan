@@ -1170,7 +1170,7 @@ def main():
                 puzzle.move_count = step
                 print_state(puzzle.state, step)
                 step += 1
-                pygame.time.wait(1000)
+                pygame.time.wait(300)
                 if step >= len(path):
                     solving = False
                     print("Đã hoàn thành giải pháp!")
