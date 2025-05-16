@@ -7,7 +7,7 @@ import random
 import tkinter as tk
 from tkinter import ttk
 import math
-from collections import deque
+from collections import deque, defaultdict
 import heapq
 
 # Khởi tạo Pygame và kiểm tra
@@ -74,21 +74,22 @@ except:
 
 # Trạng thái ban đầu và mục tiêu
 INITIAL_STATE = [
-    [1,2,3],
-    [4,0,8],
-    [5,6,7]
+    [1, 2, 3],
+    [4, 0, 8],
+    [5, 6, 7]
 ]
 GOAL_STATE = [
     [1, 2, 3],
-    [4,5,6],
-    [7,8,0]
+    [4, 5, 6],
+    [7, 8, 0]
 ]
 
 # Danh sách thuật toán
 ALGORITHMS = ["BFS", "DFS", "IDs", "Simple Hill Climbing",
               "Stochastic Hill Climbing", "Steepest Hill Climbing",
               "Greedy", "UCS", "A*", "IDA*", "Simulated Annealing",
-              "Genetic Algorithm", "Local Beam Search"]
+              "Genetic Algorithm", "Local Beam Search", "Q-Learning"]
+
 
 def manhattan_distance(state, goal):
     distance = 0
@@ -99,6 +100,7 @@ def manhattan_distance(state, goal):
                 goal_pos = [(x, y) for x in range(3) for y in range(3) if goal[x][y] == value][0]
                 distance += abs(i - goal_pos[0]) + abs(j - goal_pos[1])
     return distance
+
 
 def get_neighbors(state):
     neighbors = []
@@ -114,6 +116,7 @@ def get_neighbors(state):
                         neighbors.append(new_state)
                 return neighbors
     return []
+
 
 class DropdownMenu:
     def __init__(self):
@@ -145,6 +148,7 @@ class DropdownMenu:
     def get_selection(self):
         self.root.mainloop()
         return self.selected_algorithm.get()
+
 
 class Puzzle:
     def __init__(self, initial_state):
@@ -183,7 +187,7 @@ class Puzzle:
                     pygame.draw.rect(screen, LIGHT_BLUE, rect, border_radius=5)
                 pygame.draw.rect(screen, DARK_GRAY, rect, 2, border_radius=5)
                 if state[i][j] != 0:
-                    text = SMALL_FONT.render(str(state[i][j]), True, WHITE)
+                    text = SMALL_FONT.render(str(self.state[i][j]), True, WHITE)
                     text_rect = text.get_rect(center=(x0 + small_cell_size // 2, y0 + small_cell_size // 2))
                     screen.blit(text, text_rect)
 
@@ -197,11 +201,122 @@ class Puzzle:
     def get_state_tuple(self):
         return tuple(tuple(row) for row in self.state)
 
+    def is_solvable(self):
+        """Check if the puzzle state is solvable by counting inversions"""
+        flat_state = [self.state[i][j] for i in range(3) for j in range(3) if self.state[i][j] != 0]
+        inversions = 0
+        for i in range(len(flat_state)):
+            for j in range(i + 1, len(flat_state)):
+                if flat_state[i] > flat_state[j]:
+                    inversions += 1
+        return inversions % 2 == 0
+
+
 class PuzzleSolver:
     def __init__(self, algorithm, puzzle):
         self.algorithm = algorithm
         self.puzzle = puzzle
         self.directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    def q_learning(self, screen, font, small_font, selected_algorithm):
+        """Q-learning algorithm to solve the 8-puzzle"""
+        if self.puzzle.state == GOAL_STATE:
+            return [self.puzzle.state], []
+
+        # Initialize Q-table and parameters
+        q_table = defaultdict(lambda: defaultdict(float))
+        alpha = 0.1  # Learning rate
+        gamma = 0.9  # Discount factor
+        epsilon = 0.3  # Exploration rate
+        num_episodes = 1000
+        max_steps = 100
+        training_history = []
+
+        def choose_action(state, valid_states):
+            state_tuple = tuple(tuple(row) for row in state)
+            valid_actions = []
+            for i, next_state in enumerate(valid_states):
+                if next_state != state:
+                    valid_actions.append(i)
+            if not valid_actions:
+                return None, None
+            if random.uniform(0, 1) < epsilon:
+                return random.choice(valid_actions), valid_states[random.choice(valid_actions)]
+            q_values = {i: q_table[state_tuple][i] for i in valid_actions}
+            best_action = max(q_values.items(), key=lambda x: x[1])[0] if q_values else random.choice(valid_actions)
+            return best_action, valid_states[best_action]
+
+        # Training phase
+        for episode in range(num_episodes):
+            state = [row[:] for row in self.puzzle.state]
+            steps = 0
+            total_reward = 0
+
+            for _ in range(max_steps):
+                neighbors = get_neighbors(state)
+                if not neighbors:
+                    break
+                action, next_state = choose_action(state, neighbors)
+                if action is None:
+                    break
+                next_state_tuple = tuple(tuple(row) for row in next_state)
+                reward = 100 if next_state == GOAL_STATE else -manhattan_distance(next_state, GOAL_STATE)
+                total_reward += reward
+
+                # Update Q-value
+                next_neighbors = get_neighbors(next_state)
+                max_next_q = max([q_table[next_state_tuple][i] for i in range(len(next_neighbors))], default=0)
+                state_tuple = tuple(tuple(row) for row in state)
+                q_table[state_tuple][action] += alpha * (reward + gamma * max_next_q - q_table[state_tuple][action])
+
+                state = next_state
+                steps += 1
+                if next_state == GOAL_STATE:
+                    break
+
+            epsilon = max(0.01, epsilon * 0.995)
+            training_history.append({'episode': episode + 1, 'steps': steps, 'reward': total_reward})
+            if (episode + 1) % 100 == 0:
+                print(f"Q-Learning: Episode {episode + 1}/{num_episodes}, Steps: {steps}, Reward: {total_reward}")
+
+        # Solving phase: Generate path using learned Q-table
+        state = [row[:] for row in self.puzzle.state]
+        path = [state]
+        steps = 0
+        visited = set()
+        visited.add(tuple(tuple(row) for row in state))
+
+        while steps < max_steps:
+            neighbors = get_neighbors(state)
+            if not neighbors:
+                break
+            state_tuple = tuple(tuple(row) for row in state)
+            q_values = {i: q_table[state_tuple][i] for i in range(len(neighbors))}
+            action = max(q_values.items(), key=lambda x: x[1])[0] if q_values else random.choice(range(len(neighbors)))
+            next_state = neighbors[action]
+            next_state_tuple = tuple(tuple(row) for row in next_state)
+            if next_state_tuple in visited:
+                break
+            visited.add(next_state_tuple)
+            state = next_state
+            path.append(state)
+            self.puzzle.state = state
+            if picture_background:
+                screen.fill(WHITE)
+                screen.blit(picture_background, (150, 450))
+            else:
+                screen.fill(WHITE)
+            self.puzzle.draw(screen)
+            draw_ui(screen, font, small_font, selected_algorithm, self.puzzle, True, False, [], 0)
+            pygame.display.flip()
+            pygame.time.wait(1000)
+            if state == GOAL_STATE:
+                print("Q-Learning found solution!")
+                return path, []
+            steps += 1
+
+        print("Q-Learning did not find exact solution, returning best path.")
+        return path, []
 
     def bfs(self, screen, font, small_font, selected_algorithm):
         if self.puzzle.state == GOAL_STATE:
@@ -403,6 +518,7 @@ class PuzzleSolver:
     def ida_star(self, screen, font, small_font, selected_algorithm):
         if self.puzzle.state == GOAL_STATE:
             return [self.puzzle.state], []
+
         def search(path, g, threshold):
             current_state = path[-1]
             f = g + manhattan_distance(current_state, GOAL_STATE)
@@ -422,6 +538,7 @@ class PuzzleSolver:
                         min_threshold = t
                     path.pop()
             return min_threshold, None
+
         threshold = manhattan_distance(self.puzzle.state, GOAL_STATE)
         path = [self.puzzle.state]
         while True:
@@ -499,7 +616,8 @@ class PuzzleSolver:
             min_fitness = min(fitness_scores)
             normalized_fitness = [f - min_fitness + 1 for f in fitness_scores]
             total_fitness = sum(normalized_fitness)
-            probabilities = [f / total_fitness for f in normalized_fitness] if total_fitness > 0 else [1/len(normalized_fitness)] * len(normalized_fitness)
+            probabilities = [f / total_fitness for f in normalized_fitness] if total_fitness > 0 else [1 / len(
+                normalized_fitness)] * len(normalized_fitness)
 
             new_states = []
             sorted_successors = sorted(successor_fitness, key=lambda x: x[1], reverse=True)
@@ -548,9 +666,7 @@ class PuzzleSolver:
         self.puzzle.state = best_state
         if picture_background:
             screen.fill(WHITE)
-            screen.blit(picture_background, (150
-
-, 450))
+            screen.blit(picture_background, (150, 450))
         else:
             screen.fill(WHITE)
         self.puzzle.draw(screen)
@@ -741,7 +857,8 @@ class PuzzleSolver:
                     pygame.display.flip()
                     pygame.time.wait(1000)
 
-            elite_indices = sorted(range(len(fitness_scores)), key=lambda i: fitness_scores[i], reverse=True)[:elite_size]
+            elite_indices = sorted(range(len(fitness_scores)), key=lambda i: fitness_scores[i], reverse=True)[
+                            :elite_size]
             new_population = [population[i] for i in elite_indices]
 
             population = [state for state, f in zip(population, fitness_scores) if f >= cull_threshold]
@@ -843,6 +960,8 @@ class PuzzleSolver:
             path, best_individuals = self.simulated_annealing(screen, font, small_font, selected_algorithm)
         elif self.algorithm == "Genetic Algorithm":
             path, best_individuals = self.genetic_algorithm(screen, font, small_font, selected_algorithm)
+        elif self.algorithm == "Q-Learning":
+            path, best_individuals = self.q_learning(screen, font, small_font, selected_algorithm)
         else:
             print(f"Thuật toán {self.algorithm} chưa được triển khai.")
             path = []
@@ -852,6 +971,7 @@ class PuzzleSolver:
         if path:
             print(f"{self.algorithm} completed in {self.puzzle.execution_time:.2f}s")
         return path, best_individuals
+
 
 def draw_gradient_rect(screen, rect, color1, color2):
     x, y, w, h = rect
@@ -864,7 +984,9 @@ def draw_gradient_rect(screen, rect, color1, color2):
         pygame.draw.line(gradient_surface, (r, g, b), (0, i), (w, i))
     screen.blit(gradient_surface, (x, y))
 
-def draw_ui(screen, font, small_font, selected_algorithm, puzzle, is_running, is_paused, best_individuals, current_step):
+
+def draw_ui(screen, font, small_font, selected_algorithm, puzzle, is_running, is_paused, best_individuals,
+            current_step):
     title_text = TITLE_FONT.render("Thông tin thuật toán", True, BLUE)
     screen.blit(title_text, (450, 20))
     shadow_rect = pygame.Rect(CONTROL_PANEL_X + 5, 85, CONTROL_PANEL_WIDTH, 480)
@@ -919,15 +1041,18 @@ def draw_ui(screen, font, small_font, selected_algorithm, puzzle, is_running, is
     reset_text_rect = reset_text.get_rect(center=reset_rect.center)
     screen.blit(reset_text, reset_text_rect)
 
-    if (selected_algorithm in ["Genetic Algorithm", "Simulated Annealing", "Local Beam Search"]) and best_individuals and current_step < len(best_individuals):
+    if (selected_algorithm in ["Genetic Algorithm", "Simulated Annealing", "Local Beam Search",
+                               "Q-Learning"]) and best_individuals and current_step < len(best_individuals):
         best_state, step_or_gen, best_fitness = best_individuals[current_step]
         label = "Thế hệ" if selected_algorithm == "Genetic Algorithm" else "Lần lặp"
-        best_text = small_font.render(f"Trạng thái tốt nhất ({label} {step_or_gen}, Fitness: {best_fitness})", True, BLACK)
+        best_text = small_font.render(f"Trạng thái tốt nhất ({label} {step_or_gen}, Fitness: {best_fitness})", True,
+                                      BLACK)
         best_rect = best_text.get_rect(topleft=(CONTROL_PANEL_X + 20, 250))
         screen.blit(best_text, best_rect)
         puzzle.draw_best_individual(screen, best_state, CONTROL_PANEL_X + 20, 280)
 
     return select_rect, start_rect, pause_rect, reset_rect
+
 
 def find_highlight_pos(puzzle, path, step):
     if step + 1 >= len(path):
@@ -947,14 +1072,26 @@ def find_highlight_pos(puzzle, path, step):
                         return empty_pos, next_pos
     return empty_pos, next_pos
 
+
 def print_state(state, step):
     print(f"\nBước {step}:")
     for row in state:
         print(row)
 
+
 def main():
     print("Starting main loop...")
     puzzle = Puzzle([row[:] for row in INITIAL_STATE])
+    if not puzzle.is_solvable():
+        print("Initial state is not solvable! Generating a solvable state...")
+        state = [row[:] for row in GOAL_STATE]
+        for _ in range(15):  # Medium difficulty, similar to previous code
+            neighbors = get_neighbors(state)
+            state = random.choice(neighbors)
+        puzzle = Puzzle(state)
+        print("New solvable initial state:")
+        for row in state:
+            print(row)
     selected_algorithm = "BFS"
     running = True
     solving = False
@@ -983,6 +1120,16 @@ def main():
                         selected_algorithm = dropdown.get_selection()
                         dropdown.root.destroy()
                         puzzle = Puzzle([row[:] for row in INITIAL_STATE])
+                        if not puzzle.is_solvable():
+                            print("Initial state is not solvable! Generating a solvable state...")
+                            state = [row[:] for row in GOAL_STATE]
+                            for _ in range(15):
+                                neighbors = get_neighbors(state)
+                                state = random.choice(neighbors)
+                            puzzle = Puzzle(state)
+                            print("New solvable initial state:")
+                            for row in state:
+                                print(row)
                     if start_rect.collidepoint(x, y) and not solving:
                         solving = True
                         paused = False
@@ -999,6 +1146,16 @@ def main():
                         paused = not paused
                     if reset_rect.collidepoint(x, y):
                         puzzle = Puzzle([row[:] for row in INITIAL_STATE])
+                        if not puzzle.is_solvable():
+                            print("Initial state is not solvable! Generating a solvable state...")
+                            state = [row[:] for row in GOAL_STATE]
+                            for _ in range(15):
+                                neighbors = get_neighbors(state)
+                                state = random.choice(neighbors)
+                            puzzle = Puzzle(state)
+                            print("New solvable initial state:")
+                            for row in state:
+                                print(row)
                         puzzle.move_count = 0
                         puzzle.execution_time = 0
                         solving = False
@@ -1019,7 +1176,8 @@ def main():
                     print("Đã hoàn thành giải pháp!")
             empty_pos, next_pos = find_highlight_pos(puzzle, path, step - 1) if path and step > 0 else (None, None)
             puzzle.draw(screen, next_pos if next_pos and solving else None)
-            draw_ui(screen, FONT, SMALL_FONT, selected_algorithm, puzzle, solving, paused, best_individuals, step - 1 if step > 0 else 0)
+            draw_ui(screen, FONT, SMALL_FONT, selected_algorithm, puzzle, solving, paused, best_individuals,
+                    step - 1 if step > 0 else 0)
             pygame.display.flip()
             clock.tick(60)
     except KeyboardInterrupt:
@@ -1027,6 +1185,7 @@ def main():
     finally:
         pygame.quit()
         sys.exit()
+
 
 if __name__ == "__main__":
     main()
